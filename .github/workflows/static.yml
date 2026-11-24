@@ -38,6 +38,15 @@ jobs:
         with:
           # Upload entire repository
           path: '.'
+      - name: Prepare website
+        run: |
+          mkdir public
+          cp Building-Bricks-Of-Colour-Clustering.html public/index.html
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './public'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
