@@ -907,7 +907,7 @@ knitr::kable(
 set.seed(seed)
 kable(bricklink,
   row.names = T,
-  caption = "Table X. Raw Bricklink set") %>%
+  caption = "Raw Bricklink set") %>%
   kableExtra::scroll_box(
     width = "1000px",
     height = "500px") %>% 
