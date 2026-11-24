@@ -1,0 +1,2014 @@
+---
+title: "Building Bricks Of Colour Clustering"
+author: "Kajetan Siwek"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    code_folding: hide
+    code_download: true
+    self_contained: true
+    theme: paper
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+bibliography: references.bib
+link-citations: true
+csl: apa.csl
+nocite: '@*'
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+
+.main-container {
+  max-width: 1500px !important;
+  width: 95% !important;
+}
+
+body, td {
+   font-size: 16px;
+}
+code.r{
+  font-size: 14px;
+}
+pre {
+  font-size: 14px
+}
+
+refs .csl-entry {
+    margin-bottom: 1em;
+    padding-bottom: 0.3em;
+    line-height: 1.5;
+}
+
+</style>
+
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, cache = F, fig.show = "hold")
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(plotly)
+library(farver)
+library(jpeg)
+library(rasterImage)
+library(flexclust)
+library(cluster)
+library(DescTools)
+library(hues)
+library(xml2)
+library(stringr)
+library(hopkins)
+library(factoextra)
+library(fpc)
+library(grid)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(aricode)
+library(psych)
+seed <- 17
+```
+
+
+Completed as part of the Unsupervised Learning [2400-DS1UL] course requirements for the Data Science and Business Analytics programme (Faculty of Economic Sciences, University of Warsaw). The paper is primarily based on course materials, supported by additional external sources.
+
+# Introduction 
+
+This paper (also referred to as the project) is a study exploring the possibilities and limitations of clustering for image segmentation, and the analysis of market and visual characteristics of LEGO colours. In simple terms, clustering is an unsupervised learning algorithm used to group observations of similar characteristics into clusters. For this study, the methods of partitioning around medoids are used, where cluster centres are real data points (medoids) as opposed to arbitrary artificial points not present in the original data (centroids). The project encompasses three topics divided into three chapters. Chapter 1 evaluates how different colour-spaces influence image segmentation performance when applying partitioning around medoids. It identifies the optimal colour-space for segmenting LEGO set product images for the best preservation of the original colour-schemes. Chapter 2 analyses LEGO colours based on their market and visual attributes using the BrickLink marketplace dataset. A clustering algorithm is applied to determine whether LEGO colours can be divided into sensible, distinct market groups and colour palettes. Chapter 3 describes an experimental study, exploring how cluster analysis and image segmentation can be used to create alternative colour-schemes of LEGO sets.
+
+## Transparency Clause on the Use of Generative AI
+
+I declare that during the completion of this project, generative artificial intelligence (GenAI) was used. Each output from GenAI was evaluated and corrected by me before being applied to the project. The model used was Google Gemini 4 Hydrogen Thinking (November 2026 version), accessed via Google Workspace for Education under an institutional licence for students at the University of Warsaw. GenAI was utilised within the following scope:
+
+- _Defining Functions_: Throughout this project, numerous metrics and plots are repeated multiple times for individual objects of the same type. To simplify and produce cleaner code, new functions are defined and widely used. Some of the functions have been generated with GenAI based on scripts I first wrote on one example. The specific functions created this way are: `plot3DColourModel`, `getImageInColorModels`, `AverageSilhouetteCLARA`, `CLARAImageColourSpace`, `CLARAMedoidsToHEX`, `plotCLARAImage`. The function `evaluateImageClusteringByClusters` was generated without an example, but based on the methodology provided in subsection 1.4.2 'CIEDE2000 Evaluation'. 
+
+- _Graphics Distribution_: In Chapter 3, GenAI was used to help with the layout of the plots shown, so they can be viewed next to each other, yet remain readable.
+
+- _General language revision_: In the final stage of working on the project, I ran it through GenAI for technical proof-reading and to catch any possible typos, grammar mistakes, awkward sentences, etc.
+
+
+# Chapter 1: Evaluation of Colour-Spaces for Image Segmentation of LEGO Sets
+
+Image segmentation is a process of partitioning a digital image into visual regions based on pixel features [@gonzalez_digital_2018]. This chapter segments pixel data using the CLARA (Clustering Large Applications) algorithm to extract representative colour palettes from LEGO set photos. Each pixel represents an observation defined by its values in a given colour space.
+
+The focus of clustering in this and the following sections of this project is to extract colour palettes based on the segmentation and colours actually present in the image. In this case, palette extraction requires cluster centres to be actual observed pixels (medoids) rather than computed mean points (centroids). Centroid-based clustering can produce arbitrary colour values not corresponding to any of the actual pixels from the source image. Medoid-based partitioning guarantees that every cluster center corresponds to a real pixel value present in the set photo.
+
+Standard Partitioning Around Medoids (PAM) computes a full pairwise dissimilarity matrix (N×N). This approach does not scale to digital images, where even a modest resolution can yield large data frames. CLARA resolves scalability constraints by sampling multiple subsets from the image dataset, running PAM on each subsample to find candidate medoids, and selecting the medoids that minimise overall dissimilarity across the entire dataset.
+
+## 1.1 Introduction to the Selection of Colour-Spaces
+
+A colour-space (in this paper used interchangeably with colour-model) provides a schematic system to organise and reproduce colours across digital displays and physical media. As different colour-spaces use different metrics to represent colour, clustering with the use of Euclidean distance ought to yield colour-space-specific medoids based on the transformation.[@khattab_color_2014] [@wikipedia_color_spaces]. 
+
+For this experiment, seven colour-spaces have been chosen:
+
+- RGB (Red, Green, Blue): An additive colour-model where the colour of the pixel is defined by an integer for a given channel (R, G and B) in the range from 0 to 255.
+
+- sRGB (Standard RGB): A standardised scale of RGB where the channel values are normalised to range from 0 to 1.
+
+- CMY (Cyan, Magenta, Yellow): A subtractive colour model used commonly in printing. Each channel is a linear inverse of the RGB channels (so $C=255−R$, $M=255−G$, $Y=255−B$)
+
+- CIELAB (L\*a\*B\*): A perceptually uniform colour-model, where L\* represents perceptual lightness, a\* represents the green-red axis, and b\* represents the blue-yellow axis. Established by the International Commission on Illumination (CIE) in 1976. Conceptually, distances in CIELAB should approximate human perceptual differences.
+
+- OKLAB: An _improvement_ to CIELAB [@ottosson_oklab]. Fixes hue-linearity distortions of saturated colours and balances perceptual lightness gradients. 
+
+- HSV (Hue, Saturation, Value): A cylindrical transform of RGB that separates chromatic content (Hue) from colour intensity (Saturation) and brightness (Value).
+
+- XYZ (CIE 1931 XYZ): The 'oldest' colour-space from the list, the foundational reference colour-space from which all other standard colour-spaces are derived.
+
+For the conversion between the colours in this and all the following chapters, the `farver` package is utilised. `farver` is a specialised package to handle colour operations of various kinds in R and will prove useful in different sections throughout this project.
+
+Each colour-model represents individual colours using three coordinate values; therefore, we can map these coordinate values into a 3D scatter plot. Interactive renders are provided via the `plotly` package.
+
+Digital plots display colour points using 24-bit hexadecimal string encodings (`#RRGGBB`), derived from 8-bit RGB channels. Plotting R native colours across each space reveals how mathematical transformations reshape colour distributions within 3D geometric boundaries.
+
+To plot the colours, first we produce data frames of native R colours in the encodings of the considered colour-spaces.
+
+``` {r R colours}
+RColours <- colours()
+
+RColours_RGB <- t(col2rgb(colours()))
+rownames(RColours_RGB) <- RColours
+
+RColours <- data.frame(row.names = RColours,
+                       "hexCode" = rgb(RColours_RGB, maxColorValue = 255))
+
+RColours_sRGB <- RColours_RGB / 255
+RColours_RGB <- as.data.frame(RColours_RGB)
+RColours_sRGB <- as.data.frame(RColours_sRGB)
+RColours_CMY <- data.frame(row.names=rownames(RColours),
+                              farver::convert_colour(RColours_RGB,
+                                                     from = "rgb",
+                                                     to = "cmy"))
+RColours_CIELAB <- data.frame(row.names=rownames(RColours),
+                              farver::convert_colour(RColours_RGB,
+                                                     from = "rgb",
+                                                     to = "lab"))
+RColours_OKLAB <- data.frame(row.names=rownames(RColours),
+                              farver::convert_colour(RColours_RGB,
+                                                     from = "rgb",
+                                                     to = "oklab"))
+RColours_HSV <- data.frame(row.names=rownames(RColours),
+                              farver::convert_colour(RColours_RGB,
+                                                     from = "rgb",
+                                                     to = "hsv"))
+RColours_XYZ <- data.frame(row.names=rownames(RColours),
+                              farver::convert_colour(RColours_RGB,
+                                                     from = "rgb",
+                                                     to = "xyz"))
+
+```
+
+### 1.1.1 Questions and Hypotheses regarding colour-space representations
+
+Questions and hypotheses:
+
+> _Q1: To what extent does the choice of colour-space affect the quality of medoid-based image segmentation?_
+
+> **H1a**: Different colour-spaces produce significantly different segmentation results.  
+**H1b**: RGB, sRGB and CMY produce identical clustering results due to their linear transformations preserving Euclidean distances between colour values.
+
+> _Q2: Which colour-space provides the best colour reconstruction quality when representing LEGO product images using a restricted number of colours?_
+
+>**H2a**: Perceptually oriented colour-spaces (CIELAB and OKLAB) achieve lower perceptual reconstruction errors than conventional colour-spaces (RGB, sRGB and CMY).  
+**H2b**: OKLAB yields lower perceptual reconstruction error than CIELAB.  
+**H2c**: HSV and XYZ yield the poorest colour reconstruction performance among the evaluated colour-spaces.
+
+### 1.1.2 Preview of data sets of R native colours in different colour-spaces {.tabset}
+
+#### R Colours
+```{r}
+kable(head(RColours, 10))
+```
+
+#### RGB
+```{r}
+kable(head(RColours_RGB, 10))
+```
+
+#### sRGB
+```{r}
+kable(head(RColours_sRGB, 10))
+```
+
+#### CMY
+```{r}
+kable(head(RColours_CMY, 10))
+```
+
+#### CIELAB
+```{r}
+kable(head(RColours_CIELAB, 10))
+```
+
+#### OKLAB
+```{r}
+kable(head(RColours_OKLAB, 10))
+```
+
+#### HSV
+```{r}
+kable(head(RColours_HSV, 10))
+```
+
+#### XYZ
+```{r}
+kable(head(RColours_XYZ, 10))
+```
+
+### 1.1.3 Visualisation of R native colours
+
+It should be noted that a simple 3D Cartesian representation is used for rendering all the colour-spaces. Although this choice is not ideal for colour-space visualisation, as they typically require specialised non-Cartesian geometry to be properly rendered, this choice is deliberate as the partitioning algorithm chosen for this chapter utilises the Euclidean distance metric. 
+
+CLARA/PAM calculation of dissimilarity treats the colour-spaces encodings as raw coordinate columns and uses 3D Euclidean distance. Rendering the colour-spaces in Cartesian space reveals why clustering based on Euclidean distance could yield worse results for spaces like HSV.
+
+```{r Function Plot Colour-Model into 3D Space, fig.width=12, fig.height=9, out.width="100%"}
+# GENERARTIVE AI USE 2026-11-05
+# I first wrote out a plot function for singual Colour-Model myself
+# and then prompted ChatGPT to create a simple function 
+# as to not repeat the whole code for plotting 7 times
+# I did minimal corrections to the generated function 
+
+plot3DColourModel <- function(data,
+                              x, y, z,
+                              title = "3D Colour Model",
+                              color = NULL,
+                              marker.size = 7,
+                              marker.opacity = 1) {
+  
+  # If no colours are supplied, use rownames to extract them from RColours
+  if (is.null(color)) {
+    color <- RColours$hexCode[
+      match(rownames(data), rownames(RColours))
+    ]
+  }
+  
+  plot_ly(
+    x = data[[x]],
+    y = data[[y]],
+    z = data[[z]],
+    width = 700,
+    height = 700,
+    type = "scatter3d",
+    mode = "markers",
+    marker = list(
+      size = marker.size,
+      color = color,
+      opacity = marker.opacity
+    ),
+    text = rownames(data),
+    hoverinfo = "text"
+  ) %>%
+    layout(
+      title = title,
+      scene = list(
+        xaxis = list(title = x),
+        yaxis = list(title = y),
+        zaxis = list(title = z)
+      )
+    )
+}
+
+
+```
+
+### 1.1.4 Plots {.tabset}
+
+#### RGB
+
+```{r fig.width=12, fig.height=8, out.width="100%"}
+plot3DColourModel(
+  RColours_RGB,
+  "red", "green", "blue",
+  title = "3D representation of R native colors\nin RGB Colour Space"
+)
+```
+
+#### sRGB
+
+```{r fig.width=12, fig.height=8, out.width="100%"}
+plot3DColourModel(
+  RColours_sRGB,
+  "red", "green", "blue",
+  title = "3D representation of R native colors\nin sRGB Colour Space"
+)
+```
+
+#### CMY
+
+```{r fig.width=12, fig.height=8, out.width="100%"}
+plot3DColourModel(
+  RColours_CMY,
+  "c", "m", "y",
+  title = "3D representation of R native colors\nin CMY Colour Space"
+)
+```
+
+#### CIELAB
+
+```{r fig.width=12, fig.height=8, out.width="100%"}
+plot3DColourModel(
+  RColours_CIELAB,
+  "a", "b", "l",
+  title = "3D representation of R native colors\nin CIELAB Colour Space"
+)
+```
+
+#### OKLAB
+
+```{r fig.width=12, fig.height=8, out.width="100%"}
+plot3DColourModel(
+  RColours_OKLAB,
+  "a", "b", "l",
+  title = "3D representation of R native colors\nin OKLAB Colour Space"
+)
+```
+
+#### HSV
+
+```{r fig.width=12, fig.height=8, out.width="100%"}
+plot3DColourModel(
+  RColours_HSV,
+  "h", "s", "v",
+  title = "3D representation of R native colors\nin HSV Colour Space"
+)
+```
+
+#### XYZ
+
+```{r fig.width=12, fig.height=8, out.width="100%"}
+plot3DColourModel(
+  RColours_XYZ,
+  "x", "y", "z",
+  title = "3D representation of R native colors\nin XYZ Colour Space"
+)
+```
+
+```{r Clear memory }
+rm(list = c("RColours_CIELAB","RColours_CMY",
+            "RColours_HSV","RColours_OKLAB",
+            "RColours_RGB", "RColours_sRGB",
+            "RColours_XYZ"))
+```
+
+
+## 1.2 Showcase of LEGO sets product pictures for comparison
+
+
+In the following chapter, we aim to recolour LEGO sets, so for this chapter we are testing how well different colour-space segmentations work for retaining the perceptual integrity of the sets.
+
+We evaluate colour-space segmentation using official product photos of three representative LEGO sets:
+
+- _Diversity of colours_: Sets containing distinct primary, secondary, and neutral hues.
+- _Structural range_: Buildings, mechanical figures, and organic botanical builds.
+- _Target demographics_: Display-focused adult sets and active playsets.
+
+Images are sourced from [BrickOwl](https://www.brickowl.com) standard catalog photos. Studio photos present products isolated on plain white backgrounds.
+
+Annotation A) The studio photos were chosen so as to focus on the product itself rather than colourful backgrounds of promotional material or set box images.
+
+Annotation B) The positive of studio photos -- the fact they show isolated sets presented on a white background -- is also a huge drawback when performing image segmentation. White background pixels make up a significant fraction of the whole photo. As a result, the colour white `#FFFFFF` is bound to form its own cluster medoid in every model. While background removal masking could isolate product bricks, automated colour thresholding risks removing white LEGO element bricks. Therefore, we evaluate raw product photos directly, but the 'White Cluster Issue' is to be accounted for.
+
+### 1.2.1 Chosen LEGO sets, description of images {.tabset}
+
+Three LEGO sets were chosen for the evaluation of colour-spaces.
+
+#### Seaside House 7346-1
+
+```{r Seaside House 7346-1 Load and Plot, fig.width=8, fig.height=8}
+seasideHouse <- readJPEG("data/lego-seaside-house-set-7346-55377.jpg")
+
+plot.new()
+title("Seaside House 7346-1 Alternative Build B")
+rasterImage(seasideHouse, 0, 0, 1, 1)
+```
+
+#### Cole's Titan Dragon Mech 71821-1
+
+```{r Coles Titan Dragon Mech 71821-1 Load and Plot, fig.width=8, fig.height=8}
+dragonMech <- readJPEG("data/lego-cole-s-titan-dragon-mech-set-71821-1523519.jpg")
+
+plot.new()
+title("Cole's Titan Dragon Mech 71821-1")
+rasterImage(dragonMech, 0, 0, 1, 1)
+```
+
+#### Wildflower Bouquet 10313-1
+
+```{r Wildflower Bouquet 10313-1 Load and Plot, fig.width=8, fig.height=8}
+flowers <- readJPEG("data/lego-wildflower-bouquet-set-10313-1892227.jpg")
+
+plot.new()
+title("Wildflower Bouquet 10313-1")
+rasterImage(flowers, 0, 0, 1, 1)
+```
+
+## 1.3 Prepare images for segmentations and perform clustering
+
+### 1.3.1 Converting between colour-models
+
+Images loaded via `readJPEG()` form 3D arrays ($height×width×channels$) in normalised sRGB (0,1). We flatten these arrays into a 2D matrix where each row represents a single spatial pixel coordinate (`dimx`, `dimy`) and its corresponding colour values across each colour-space.
+
+```{r Function to get color datasets for an image}
+
+getImageInColorModels <- function(array) {
+  
+  dm1 <- dim(array)
+  
+  # info on image and its values in different colour spaces
+  final_list <- list(dim = dm1)
+  
+  image_sRGB <- data.frame(dimx=rep(1:dm1[2], each=dm1[1]),  
+                         dimy=rep(dm1[1]:1, dm1[2]), 
+                         red=as.vector(array[,,1]),  
+                         green=as.vector(array[,,2]),
+                         blue=as.vector(array[,,3]))
+  
+  final_list$sRGB <- image_sRGB
+  image_RGB <- cbind(image_sRGB[,1:2],image_sRGB[,c("red", "green", "blue")] * 255)
+  final_list$RGB <- image_RGB
+  
+  final_list$CMY <- data.frame(dimx = image_sRGB$dimx,
+                               dimy = image_sRGB$dimy,
+                         farver::convert_colour(image_RGB[3:5], from = "rgb", to = "cmy"))
+  final_list$CIELAB <- data.frame(dimx = image_sRGB$dimx,
+                               dimy = image_sRGB$dimy,
+                            farver::convert_colour(image_RGB[3:5], from = "rgb", to = "lab"))
+  final_list$OKLAB <- data.frame(dimx = image_sRGB$dimx,
+                               dimy = image_sRGB$dimy,
+                            farver::convert_colour(image_RGB[3:5], from = "rgb", to = "oklab"))
+  final_list$HSV <- data.frame(dimx = image_sRGB$dimx,
+                               dimy = image_sRGB$dimy,
+                            farver::convert_colour(image_RGB[3:5], from = "rgb", to = "hsv"))
+  final_list$XYZ <- data.frame(dimx = image_sRGB$dimx,
+                               dimy = image_sRGB$dimy,
+                         farver::convert_colour(image_RGB[3:5], from = "rgb", to = "xyz"))
+  
+  return(final_list)
+}
+```
+
+*Preview of how the list objects look like*
+
+```{r Use the function on each image}
+seasideHouse_info <- getImageInColorModels(seasideHouse)
+dragonMech_info <- getImageInColorModels(dragonMech)
+flowers_info <- getImageInColorModels(flowers)
+
+# look how each item of the list look like
+lapply(seasideHouse_info, head)
+```
+
+### 1.3.2 Determine Optimal Cluster Count ($k$) for each image
+
+To compare how well each of those works for image segmentation, we need to perform clustering on each of the colour-model encodings. To fairly compare these colour-models for a given image, we need to establish a constant number of clusters `k` for all colour-spaces.
+
+To ensure a fair comparison of segmentation between selected colour-spaces, we ought to choose a fixed count $k$ for each image. We run CLARA across $k \in [2,8]$ and save information on average silhouette width for each colour-space. Using `DescTools::Mode` we select the $k$ value across colour-spaces as the optimal cluster count for that image.
+
+```{r Function for Average Width for the colour-space}
+AverageSilhouetteCLARA <- function(image_3DColourSpace, vectorColumns = NA, mink = 2, maxk = 8) {
+  
+  if (is.na(vectorColumns)){vectorColumns <- names(image_3DColourSpace[,3:5])}
+ 
+  vectorSilhouette <- c()
+  
+  for (k in mink:maxk){
+    set.seed(seed)
+    c <- clara(image_3DColourSpace[,vectorColumns], k)
+    vectorSilhouette[k] <- c$silinfo$avg.width
+  }
+  
+  return(data.frame(k= mink:maxk,
+                    AverageWidthSilhouette = vectorSilhouette[mink:maxk]))
+  
+}
+```
+
+``` {r Find optimal K}
+
+seasideHouse_silthoette <- lapply(seasideHouse_info[-1], AverageSilhouetteCLARA)
+dragonMech_silthoette <- lapply(dragonMech_info[-1], AverageSilhouetteCLARA)
+flowers_silthoette <- lapply(flowers_info[-1], AverageSilhouetteCLARA)
+
+# search for optimal K for each image
+seasideHouse_optimalK <- lapply(seasideHouse_silthoette, \(x) x[which.max(x$AverageWidthSilhouette), ])
+dragonMech_optimalK <- lapply(dragonMech_silthoette, \(x) x[which.max(x$AverageWidthSilhouette), ])
+flowers_optimalK <- lapply(flowers_silthoette, \(x) x[which.max(x$AverageWidthSilhouette), ])
+
+optimalK <-  data.frame("optimal k" = sapply(list(sapply(seasideHouse_optimalK, \(x) x$k),
+                                                  sapply(dragonMech_optimalK, \(x) x$k),
+                                                  sapply(flowers_optimalK, \(x) x$k)),
+                                             DescTools::Mode),
+                     row.names = c("Seaside House", "Cole's Titan Dragon Mech", "Wildflower Bouquet"))
+
+kable(x = optimalK, row.names = T, caption = "Selected Optimal Cluster Count (k) per Image Set")
+```
+
+### 1.3.3 CLARA Clustering and Palette Extraction
+
+```{r CLARA clustering}
+CLARAImageColourSpace <- function(image_3DColourSpace, k) {
+
+  final_list <- lapply(image_3DColourSpace[names(image_3DColourSpace) != "dim"],
+                       function(x) {
+                         set.seed(seed)
+                         clara(x[, 3:5], k = k)})
+
+  return(final_list)
+}
+
+seasideHouse_CLARA <- CLARAImageColourSpace(seasideHouse_info, optimalK["Seaside House",])
+dragonMech_CLARA <- CLARAImageColourSpace(dragonMech_info, optimalK["Cole's Titan Dragon Mech",])
+flowers_CLARA <- CLARAImageColourSpace(flowers_info, optimalK["Wildflower Bouquet",])
+```
+
+```{r Get swatches}
+CLARAMedoidsToHEX <- function(CLARA_results) {
+
+  spaces <- c(
+    RGB = "rgb",
+    sRGB = "rgb",
+    CMY = "cmy",
+    CIELAB = "lab",
+    OKLAB = "oklab",
+    HSV = "hsv",
+    XYZ = "xyz")
+
+  lapply(names(CLARA_results), 
+         \(space) {
+           medoids <- CLARA_results[[space]]$medoids
+           if (space == "sRGB") {medoids <- medoids * 255}
+           farver::encode_colour(medoids, from = spaces[space])}) %>% 
+    setNames(names(CLARA_results))
+}
+
+seasideHouse_HEX <- CLARAMedoidsToHEX(seasideHouse_CLARA)
+dragonMech_HEX <- CLARAMedoidsToHEX(dragonMech_CLARA)
+flowers_HEX <- CLARAMedoidsToHEX(flowers_CLARA)
+```
+
+```{r Function Reconstrucnting the image with segementation.}
+plotCLARAImage <- function(array, CLARA_results) {
+  
+
+  dm1 <- dim(array)
+  hex_list <- CLARAMedoidsToHEX(CLARA_results)
+
+  paint_list <- lapply(names(CLARA_results), function(space) {
+    clustering <- CLARA_results[[space]]$clustering
+    hex <- hex_list[[space]]
+    matrix(hex[clustering], nrow = dm1[1], ncol = dm1[2])})
+  
+  names(paint_list) <- names(CLARA_results)
+  
+  paint_list <- c(list(Original = as.raster(array)), paint_list)
+  
+  plot_colour <- function(img, label) {
+  plot.new()
+  plot.window(xlim = c(0, ncol(img)),
+              ylim = c(0, nrow(img)),
+              asp = 1,
+              xaxs = "i",
+              yaxs = "i")
+  rasterImage(img, 0, 0, ncol(img), nrow(img))
+  mtext(label, side=3, line=0, cex=1, font = 2)}
+
+  
+  # Original image
+  par(mfrow=c(1,1),
+      mar = c(0.3,0.3,2,0.3))
+  plot_colour(paint_list$Original, "Original Image (sRGB)")
+  
+  # RGB family
+  par(mfrow=c(1,3),
+      mar = c(0.3,0.3,2,0.3))
+  plot_colour(paint_list$RGB, "RGB")
+  plot_colour(paint_list$sRGB, "sRGB")
+  plot_colour(paint_list$CMY, "CMY")
+  
+  # Perceptually oriented colour spaces
+  par(mfrow=c(1,2),
+      mar = c(0.3,0.3,2,0.3))
+  plot_colour(paint_list$CIELAB, "CIELAB")
+  plot_colour(paint_list$OKLAB, "OKLAB")
+  
+  # Other colour spaces
+  par(mfrow=c(1,2),
+      mar = c(0.3,0.3,2,0.3))
+  plot_colour(paint_list$HSV, "HSV")
+  plot_colour(paint_list$XYZ, "XYZ")
+  
+  par(mfrow=c(1,1),
+      mar = rep(0.25, 4))
+  
+  invisible(paint_list)
+}
+
+```
+
+
+## 1.4 Evaluation of colour-spaces
+
+The colour-spaces are evaluated with two methods:
+
+- Visual Evaluation: qualitative assessment of extracted visual palettes in the reconstructed image. 
+- CIEDE2000 distance: standard quantitative metric assessing alignment of numerical distances of a colour to human-perceived colours. 
+
+### 1.4.1 Visual Evaluation {.tabset}
+
+Reconstructing source images from assigned medoid colours reveals clear qualitative performance gaps between spaces.
+
+**General description for the results**:
+
+*RGB Family (RGB, sRGB, CMY)*:  
+Reconstructed images seem visually indistinguishable between all three spaces. While they preserve main structural shape and general colours, they seem sensitive to changes in lighting, resulting in some inconsistency between original images.  
+Examples:  
+
+- *Seaside House* artificial grey highlight on the chimney and front wall; 
+- *Cole's Titan Dragon Mech* black armour pieces have brownish tint;
+- *Wildflower Bouquet* pink flower became bluish)
+
+*CIELAB and OKLAB*:  
+Worked the best for reconstruction of pictures with respect to their original colours. The main difference can be observed in their sensitivity to shadows and highlights. CIELAB _preserves colours more accurately_, although it _may flatten some of the lighting_. OKLAB _preserves shadows better_, but at the cost of some colour inaccuracies. OKLAB provides better results for overall image representation and clearer boundaries of specific objects, but CIELAB proves to be a better method for extracting real sample colours from the sets.
+
+Examples:
+
+- *Seaside House*: OKLAB clusters include more shades of blue, but there is no yellow cluster; CIELAB preserves all the colours; 
+- *Cole's Titan Dragon Mech*: OKLAB also exhibits a brownish tint on the black armour; CIELAB preserves black armour;
+- *Wildflower Bouquet* : CIELAB distinguishes _small lime-yellow flowers_ at the bottom of the picture, while OKLAB assigns them greyish colours.
+
+*HSV*:
+Image segmentation with CLARA clustering in HSV shows the limitation of applying Euclidean distance to a colour-space with non-Euclidean geometry. The reconstructed images are severely distorted, with poorly defined edges and unrefined segments appearing as scattered colour splashes across the plot.
+
+*XYZ*:
+The produced reconstructions are desaturated and grey-toned. This issue is not as apparent in *Cole's Titan Dragon Mech*, where the set looks similar to its original picture, but the other two -- more colourful -- sets are lacking in the original vibrant hues from the coloured bricks used.
+
+
+#### Seaside House 7346-1
+```{r Seaside Results, fig.width=10, fig.height=5, out.width="100%"}
+old_par <- par(no.readonly = TRUE)
+par(mfrow = c(1, 7),
+    mar = rep(0.3, 4))
+
+for (x in names(seasideHouse_HEX)) {
+  swatch(seasideHouse_HEX[[x]])
+  title(main = x)
+}
+
+seasideHouse_paint <- plotCLARAImage(
+  seasideHouse,
+  seasideHouse_CLARA
+)
+invisible(seasideHouse_paint)
+
+par(old_par)
+```
+
+#### Cole's Titan Dragon Mech 71821-1
+
+```{r Dragon Mech Results, fig.width=10, fig.height=5, out.width="100%"}
+par(mfrow = c(1, 7),
+    mar = rep(0.3, 4))
+
+for (x in names(dragonMech_HEX)) {
+  swatch(dragonMech_HEX[[x]])
+  title(main = x)
+}
+
+dragonMech_paint <- plotCLARAImage(
+  dragonMech,
+  dragonMech_CLARA
+)
+invisible(dragonMech_paint)
+
+par(old_par)
+```
+
+#### Wildflower Bouquet 10313-1
+
+```{r Flowers Results, fig.width=10, fig.height=5, out.width="100%"}
+par(mfrow = c(1, 7),
+    mar = rep(0.3, 4))
+
+for (x in names(flowers_HEX)) {
+  swatch(flowers_HEX[[x]])
+  title(main = x)
+}
+
+flowers_paint <- plotCLARAImage(
+  flowers,
+  flowers_CLARA
+)
+invisible(flowers_paint)
+
+par(old_par)
+```
+
+### 1.4.2 CIEDE2000 Evaluation
+
+We calculate the CIEDE2000 ($\Delta E_{00}$) colour difference formula to measure reconstruction error. CIEDE2000 quantifies visual deviations between original pixel colours and their assigned cluster medoids. Values of $\Delta E_{00} \approx 1.0$ correspond to the just noticeable difference for human vision, while values exceeding $2.0$ indicate clearly noticeable distortion [@ortiz_ciede2000].
+
+For each color space:
+
+1. Map the original image pixels into reference CIELAB coordinates.
+2. Convert the extracted cluster medoids into reference CIELAB coordinates.
+3. Compute $\Delta E_{00}$ between every pixel and its assigned medoid.
+4. Calculate the following metrics:
+   - Mean $\Delta E_{00}$.
+   - Maximum $\Delta E_{00}$.
+   - Percentage of pixels with $\Delta E_{00} > 2.0$.
+   
+   
+Overall, CIELAB consistently achieves the lowest mean and the lowest perceptual error ($\Delta E_{00}$) across all the tested studio photos.
+
+```{r CIEDE2000 function evaluation}
+evaluateImageClusteringByClusters <- function(image_info, image_clara) {
+  spaces <- c("sRGB", "RGB", "CMY", "CIELAB", "OKLAB", "HSV", "XYZ")
+  original_lab <- as.matrix(image_info$CIELAB[, 3:5])
+  total_pixels <- image_info$dim[1] * image_info$dim[2]
+  
+  # Map project labels directly to farver's specific keywords
+  farver_space_map <- c(sRGB="rgb", RGB="rgb", CMY="cmy", CIELAB="lab", OKLAB="oklab", HSV="hsv", XYZ="xyz")
+  
+  results <- data.frame(
+    ColorSpace = spaces, Mean_DeltaE = NA, Max_DeltaE = NA, Noticeable_Distortion_Pct = NA
+  )
+  
+  for (i in seq_along(spaces)) {
+    space <- spaces[i]
+    medoids <- image_clara[[space]]$medoids
+    
+    # Scale sRGB medoids from [0,1] to [0,255] on the fly for farver compatibility
+    if (space == "sRGB") medoids <- medoids * 255
+    
+    # Convert medoids to CIELAB space unless they are already native CIELAB
+    medoids_lab <- if (space == "CIELAB") medoids else convert_colour(medoids, from = farver_space_map[space], to = "lab")
+    
+    # Calculate compact N x K distance matrix and extract paired pixel errors
+    dist_matrix <- compare_colour(from = original_lab, to = medoids_lab, from_space = "lab", method = "cie2000")
+    pixel_errors <- dist_matrix[cbind(seq_len(total_pixels), image_clara[[space]]$clustering)]
+    
+    # Populate evaluation metrics table
+    results$Mean_DeltaE[i]            <- mean(pixel_errors)
+    results$Max_DeltaE[i]             <- max(pixel_errors)
+    results$Noticeable_Distortion_Pct[i] <- mean(pixel_errors > 2.0) * 100
+  }
+  
+  return(results)
+}
+
+```
+
+```{r Caclulate CIEDE2000 for colour-spaces}
+seasideHouse_CIEDIE2000 <- evaluateImageClusteringByClusters(seasideHouse_info, seasideHouse_CLARA)
+dragonMeach_CIEDIE2000 <- evaluateImageClusteringByClusters(dragonMech_info, dragonMech_CLARA)
+flowers_CIEDIE2000 <- evaluateImageClusteringByClusters(flowers_info, flowers_CLARA)
+```
+
+```{r Show CIEDIE2000 tables}
+knitr::kable(seasideHouse_CIEDIE2000, digits = 3, caption = "CIEDE2000 metrics for Seaside House 7346-1")
+knitr::kable(dragonMeach_CIEDIE2000, digits = 3, caption = "CIEDE2000 metrics for Cole's Titan Dragon Mech 71821-1")
+knitr::kable(flowers_CIEDIE2000, digits = 3, caption = "CIEDE2000 metrics for Wildflower Bouquet 10313-1")
+```
+
+```{r Sorted Table Evaluation}
+
+tableResults <- data.frame(
+  ColorSpace    = seasideHouse_CIEDIE2000$ColorSpace,
+  Seaside_House = seasideHouse_CIEDIE2000$Mean_DeltaE,
+  Dragon_Mech   = dragonMeach_CIEDIE2000$Mean_DeltaE,
+  Flowers   = flowers_CIEDIE2000$Mean_DeltaE
+)
+
+knitr::kable(tableResults[order(tableResults$Seaside_House), ], digits = 3, caption = "Ranked Color Space Performance (Best to Worst) for Mean_DeltaE")
+```
+
+## 1.5 Methodological Limitations
+
+Limitations and methodological constrains should be addressed when interpreting results of Chapter 1:
+
+- The White Background Issue: Unmasked white backgrounds take up significant image areas. Background pixels pull one medoid directly to white across all models.
+
+- Euclidean Distance Bias: As noted before (see Section 1.1.3), Euclidean distance formulas assume a linear geometry; they yield highly accurate results in Cartesian colour spaces that align with this mathematical assumption. Applying Euclidean metrics to non-Cartesian geometries distorts distance calculations, yielding unreliable results.
+
+- CIEDE2000 Metric Bias: For quantitative evaluation, CIEDE2000 is used. As CIEDE2000 relies on CIELAB reference coordinates, this creates a mathematical bias that inherently favours CIELAB and OKLAB over non-perceptual models like RGB or XYZ.
+
+- Conversion Loss: To construct datasets, perform clustering, and calculate CIEDE2000 for each colour-space, `farver::convert_colour` was used. Any conversion between the colour-spaces may lead to some loss of information as they are not simple linear transformations of each other.
+
+## 1.6 Conclusion and Colour Space Selection
+
+Based on the qualitative and quantitative evaluation, the initial hypotheses should be addressed.
+
+> H1a & H1b: The colour-spaces in the RGB family (sRGB, RGB and CMY) yield non-significantly different numerical errors and visually indistinguishable results due to being linear transformations of each other. The rest of the colour-spaces yield significantly different partitionings.
+
+> H2a & H2b: Perceptually uniform spaces outperform non-perceptual models. However, CIELAB consistently outperforms OKLAB, yielding lower mean $\Delta E_{00}$ reconstruction errors across all test images.
+
+> H2c: HSV and XYZ produce the poorest colour reconstruction performance overall, characterised by severe spatial distortion (HSV) or heavy desaturation (XYZ).
+
+For the remaining sections of this project, CIELAB is selected as methodologically the best colour-space. CIELAB successfully extracts primary palettes of LEGO bricks from studio photos and is not sensitive to highlights and shadows in the photo. Since the primary focus of the project is the work and analysis of LEGO colours rather than strict recreation of details in images, CIELAB is perfectly suited for this task."
+
+# Chapter 2: Analysis of LEGO Colours by BrickLink Market and Visual Aspects
+
+The LEGO Group was founded in 1932, and since the introduction of LEGO System (1955) and LEGO Technic (1977), it has released over 20,000 sets [@lego_history]. With it came a huge market, including second-hand marketplaces and bricks available in over 100 colours.
+
+BrickLink is one of the aforementioned second-hand marketplaces, currently also owned by The LEGO Group. The website is a place for independent resellers to post their offerings, at the same time serving as an unofficial catalogue for LEGO products [@bricklink_reference_catalog]. On their website, you may download metadata regarding the whole available set catalogue, lists of different bricks, inventories of individual sets, and, most interestingly, the _colours dataset_.
+
+The _colours dataset_ is the main focus of this chapter, as it contains not only colour names, but also HEX codes representing the colours, information on their use in LEGO products, and market activity pulled from the marketplace.
+
+In this chapter, information from the _colours dataset_ is used for two separate clustering analyses:
+
+1. **Market Characteristics (`market`):** Investigating how LEGO colours cluster by supply, demand, and production longevity—first on raw metrics to expose scale and skewness distortions, and subsequently on log-transformed, standardised metrics.
+2. **Visual Characteristics (`labInfo`):** Partitioning the perceptual CIELAB colour space to extract representative LEGO colour palettes.
+
+Partitioning Around Medoids (PAM) is used throughout this chapter so that cluster centres correspond to actual existing LEGO colours rather than artificial centroids. Because the colour catalogue is relatively small, standard PAM can be computed directly without the need for subsampling via CLARA as in the previous chapter.
+
+---
+
+## 2.1 BrickLink Dataset Introduction and Preparation
+
+### 2.1.1 Research Questions and Hypotheses
+
+Questions and hypotheses:
+
+> _Q3: Do the scale and skewness of the data affect clustering?_
+
+> **H3**: Unscaled and skewed data results in uneven cluster groups, dependent on high-magnitude scales.
+
+> _Q4: Can market and visual characteristics be clustered into sensible and interpretable groups?_ 
+
+> **H4a**: Market characteristics can be clustered, revealing the dynamics of LEGO colours' second-hand marketplace.  
+**H4b**: Visual characteristics of LEGO colours can be clustered into coherent colour families based on hue and chroma.
+
+> _Q5: Are market dynamics dependent on visual characteristics of the colours?_
+
+> **H5**: Market clusters and visual clusters are independent of each other, resulting in low agreement between the two partitions.
+
+### 2.1.2 Data Parsing and Cleaning
+
+The data was downloaded on the 24th of October 2026 at 15:48 from the official [BrickLink Download Catalog](https://www.bricklink.com/catalogDownload.asp) in `.xml` format and parsed into a structured data frame using the `xml2` package.
+
+```{r Parse Bricklink data}
+dir <- "data/colors.xml"
+bricklink <- read_xml(dir)
+items <- xml_find_all(bricklink, ".//ITEM")
+# parse XML file
+bricklink <- data.frame(
+  # color id
+  id  = xml_text(xml_find_all(items, "./COLOR")),
+  # color name
+  name = xml_text(xml_find_all(items, "./COLORNAME")),
+  # representative hex color
+  hexNumber  = xml_text(xml_find_all(items, "./COLORRGB")),
+  # number of different parts available in this color
+  ntparts = as.numeric(xml_text(xml_find_all(items, "./COLORCNTPARTS"))),
+  # number of sets containg any part in this color
+  ntsets = as.numeric(xml_text(xml_find_all(items, "./COLORCNTSETS"))),
+  # number of wanted parts in this color
+  ntwanted = as.numeric(xml_text(xml_find_all(items, "./COLORCNTWANTED"))),
+  # number of parts available in this color
+  ntinv   = as.numeric(xml_text(xml_find_all(items, "./COLORCNTINV"))),
+  # the first year this color appeared in a set
+  yearFrom = as.numeric(xml_text(xml_find_all(items, "./COLORYEARFROM"))),
+  # the last year this color appeared in a set
+  # (so for today/year 2026, the max(bricklink$yearTo) == 2026)
+  yearTo   = as.numeric(xml_text(xml_find_all(items, "./COLORYEARTO")))
+)
+```
+
+```{r Preview of raw data}
+knitr::kable(
+  data.frame(
+    Variable = c("id", "name", "hexNumber", "ntparts", "ntsets",
+                 "ntwanted", "ntinv", "yearFrom", "yearTo"),
+    Description = c(
+      "Unique identifier of the colour.",
+      "Name of the colour.",
+      "Representative hexadecimal colour code.",
+      "Number of different parts available in this colour.",
+      "Number of sets containing at least one part in this colour.",
+      "Number of wanted parts in this colour.",
+      "Number of parts available in inventories in this colour.",
+      "First year the colour appeared in a set.",
+      "Last year the colour appeared in a set."
+    )
+  ),
+  caption = "Description of BrickLink dataset variables",
+  align = c("r", "l")
+) %>%
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = TRUE,
+    position = "center"
+  )
+
+set.seed(seed)
+kable(bricklink,
+  row.names = T,
+  caption = "Table X. Raw Bricklink set") %>%
+  kableExtra::scroll_box(
+    width = "1000px",
+    height = "500px") %>% 
+  kableExtra::column_spec(1:ncol(bricklink), width = "150px")
+```
+
+Before constructing the two subsets, the dataset is cleaned as follows:
+  
+- Remove the first entry `"(Not Applicable)"`, which is erroneous.
+- Prefix `hexNumber` with `"#"` so colour conversion and plotting functions parse hex strings properly.
+- Replace `NA` values in `ntinv` with `0`, reflecting zero parts currently listed for sale.
+- Compute `lasting = yearTo - yearFrom` to capture how many years each colour remained in active set production.
+- Exclude discontinued *Modulex* colours (`^Mx `), which belong to a non-LEGO-System architectural line.
+
+```{r Cleaning1}
+bricklink <- bricklink[-1, ] # first entry is erronous
+
+# add "#" before the hexNumber as most functions expect it to be there
+bricklink$hexNumber <- paste0("#",bricklink$hexNumber)
+
+# if there is NA in ntinv, it means there is no part available
+# NA in this case means zero
+bricklink$ntinv[is.na(bricklink$ntinv)] <- 0
+
+# add variable "lasting" == how long is/was the color in production
+bricklink$lasting = as.numeric(bricklink$yearTo - bricklink$yearFrom)
+
+# old colours from non-Lego-System bricks
+bricklink <- filter(bricklink, !str_detect(name, "^Mx "))
+```
+
+After cleaning, two main data sets for this chapter can be prepared:
+
+1) `market`: subset of `bricklink` data set on market characteristics, including columns `ntparts`, `ntsets`, `ntwanted`, `ntinv`, `lasting`.
+2) `labInfo`: subset of `bricklink` data set with information on colour characteristics. This set is built artificially, with the use of "hexNumber" and `farver::convert_colour` to create CIELAB values for each colour. In the preceding chapter CIELAB was selected as the optimal colour-space for analysing LEGO colours.
+
+```{r Preparation}
+# Lab color space values for every color
+bricklink <- cbind(bricklink, 
+                farver::convert_colour(colour = farver::decode_colour(bricklink$hexNumber), 
+                                       from = "rgb", to = "lab"))
+labels <- make.unique(as.character(bricklink$name))
+
+# subset for market
+market <- bricklink[, c("ntparts", "ntsets", "ntwanted", "ntinv", "lasting")]
+
+# subser for RGB values
+labInfo <- bricklink[, c("l", "a", "b")]
+
+# add labels
+rownames(market) <- labels
+rownames(labInfo) <- labels
+```
+
+### 2.1.3 Exploratory Overview of Prepared Subsets {.tabset}
+
+#### `market` Dataset
+
+```{r Market Preview, warning=F}
+kable(head(market, 10), caption = "First ten observations of `market`")
+
+kable(psych::describe(market),digits = 2, caption = "Descriptive statistics for `market`")
+
+```
+
+#### `labInfo` Dataset
+
+Instead of basic descriptive data, we can use the 3D plot from earlier to see how LEGO Colours look in the CIELAB Colour Space, and what the spread of the colours is.
+
+```{r}
+kable(head(labInfo, 10), caption = "First ten observations of `labInfo`")
+
+plot3DColourModel(
+  labInfo,
+  "a", "b", "l",
+  title = "LEGO Colours\nin CIELAB Colour Space",
+  color = bricklink$hexNumber
+)
+```
+
+### 2.1.4 Methodology for Clustering in following sections
+
+Test whether the datasets exhibit clustering tendency. To assess this tendency, Hopkins' statistic ($H$) and Visual Assessment provided via `factoextra::get_clust_tendency` are used. 
+
+**Hopkins' statistics ($H$)**
+To calculate $H$, uniformly distributed random points are generated within the data space:
+  
+  $$H = \frac{\text{total } y}{\text{total } x + \text{total } y}$$
+  
+  where $\text{total } x$ is the sum of nearest-neighbour distances among real observations and $\text{total } y$ is the sum of nearest-neighbour distances between artificial uniform points and real observations. Values near $0.5$ indicate spatial randomness ($H_0$), whereas values approaching $1.0$ indicate strong clustering tendency ($H_1$).
+  
+```{r MC Reps}
+mc_reps <- 5000
+```
+
+The random generation involved in calculating Hopkins' statistic raises the question of how reliable the resulting values are. To address this, a Monte Carlo simulation is performed to assess the stability of $H$ for both datasets. The Hopkins statistic is recalculated `r mc_reps` times for each data set to examine the variability of the results across repeated simulations.
+
+**Visual Assessment (VAT)**
+Visual Assessment is based on the plot of ordered dissimilarity matrix. A dissimilarity matrix is computed and similar objects are put close to each other, resulting in an ordered dissimilarity matrix. The data is assumed to have cluster tendency when some structure is visible rather than simple noise.
+
+For each dataset, the optimal number of clusters $k$ is evaluated using average silhouette width, the gap statistic, and automatic selection via `fpc::pamk`. 
+
+While the silhouette and gap statistic curves are inspected across the full range ($k \in [1, 10]$) for diagnostic transparency, the `pamk` search range is restricted to `krange = 3:10`.
+
+Silhouette-based selection frequently favours $k = 2$ whenever data exhibits a single dominant gradient, collapsing multi-dimensional variation into a binary split. Moreover, because the resulting cluster medoids are subsequently used as representative palettes to recolour LEGO sets, a two-cluster partition lacks sufficient variation in the colours. Constraining `pamk` to $k \ge 3$ prevents a trivial binary partition while still allowing the algorithm to select the optimal cluster count empirically.
+
+
+
+## 2.2 Market Characteristics Clustering
+
+Descriptive statistics reveal that `market` combines variables of different magnitudes. Firstly, we evaluate clustering on the raw values to observe whether and/or how scale disparities and right-skewness affect PAM, and then apply an appropriate transformation to achieve more balanced clusters.
+
+### 2.2.1 Clustering Tendency on Raw Market Data (`market`) {.tabset}
+
+#### Hopkins' Statistic (with Monte Carlo)
+
+```{r Market H}
+set.seed(seed)
+h_market <- get_clust_tendency(market,
+                               round(0.2 * nrow(market)),
+                               graph = TRUE,
+                               gradient = list(low = "red", mid = "white", high = "blue"))
+
+
+set.seed(seed)
+h_market_mc <- replicate(mc_reps,
+                         hopkins::hopkins(market, 
+                                          m = round(0.2 * nrow(market))))
+
+knitr::kable(t(as.matrix(summary(h_market_mc))),
+             caption = paste0("Monte Carlo Stability of Hopkins Statistic for Raw Market Data (", mc_reps, "runs)"))
+
+```
+
+#### VAT
+
+``` {r Market Vat}
+h_market$plot + ggplot2::ggtitle("VAT: Raw Market Ordered Dissimilarity Matrix")
+```
+
+### 2.2.2 PAM Clustering on Raw Market Data
+
+#### Search for Optimal $k$ `market`
+
+```{r Optimal K `market`, fig.width=12, fig.height=5}
+
+set.seed(seed)
+# PAM FOR MARKET STATISTICS
+# Assessing optimal no of cluster
+# NBClust etc.
+
+market_sil <- fviz_nbclust(market, 
+                           FUNcluster = pam,
+                           method = c("silhouette"),
+                           k.max = 10) +
+  ggplot2::ggtitle("Raw Market: Average Silhouette")
+
+market_gap <- fviz_nbclust(market, 
+                           FUNcluster = pam,
+                           method = c("gap_stat"),
+                           k.max = 10) +
+  ggplot2::ggtitle("Raw Market: Gap Statistic")
+
+market_k <- pamk(market,
+                 krange = 3:10)
+
+gridExtra::grid.arrange(market_sil, market_gap, ncol = 2)
+```
+
+Optimal number of clusters for `market` dataset: `r market_k$nc`
+
+#### Apply PAM
+
+```{r PAM Raw Market, fig.width=12, fig.height=8}
+market_pam <- pam(market, market_k$nc)
+
+p_market <- fviz_cluster(market_pam, data = market, 
+             geom = "point", 
+             ellipse.type = "norm",
+             show.clust.cent = TRUE,
+             main = "PAM clustering: market characteristics")
+
+p_market
+```
+
+```{r PAM Raw Market stripes, sil, fig.width=12, fig.height=5}
+market_pam_kcca <- flexclust::as.kcca(market_pam, market)
+pMarketStripes <- grid.grabExpr(stripes(market_pam_kcca))
+pMarketSil <- fviz_silhouette(market_pam)
+gridExtra::grid.arrange(pMarketSil, pMarketStripes, ncol = 2)
+```
+
+On unscaled values, the first principal component absorbs >85% of variance and PAM isolates a handful of extreme high-volume colours into tiny outlier clusters while compressing the rest of the catalogue.
+
+### 2.2.3 Transformations of Market Dataset
+
+As observed in the previous section, partitioning of raw market data led to unbalanced clusters, with some taking only a few observations and one cluster putting over 120 of all the observations (so ~70% in one cluster). To counter uneven high-magnitude scales, we perform a skewness check, apply log transformations and standardise the dataset, so as to achieve more balanced clusters. To inspect how variables behave closely, let's look at the distribution of the values with a histogram.
+
+``` {r Plot Raw Data Market}
+marketRaw_plot <- market %>%
+  pivot_longer(everything(), 
+               names_to = "Variable", 
+               values_to = "Value") %>%
+  ggplot(aes(x = Value, fill = Variable)) +
+  geom_histogram(bins = 50, 
+                 alpha = 0.4, 
+                 position = "identity") +
+  labs(title = "Distribution of Market Variable\n(Raw Data)", 
+       x = "Value", 
+       y = "Count")
+
+marketRaw_plot
+```
+
+To address the highly right-skewed data the aforementioned transformations are applied.
+
+1. Log Transformation (with the `log1p` function): Applied to the count variables `ntparts`, `ntsets`, `ntwanted`, `ntinv` to reduce the effect of the long right tail, `lasting` is kept on its linear year scale because it is naturally bounded by LEGO's production history. 
+2. Standardisation (with the `scale` function): Centres all five features to mean = 0 and standard deviation = 1, so all variables represent equal distances alongside each other.
+
+Two plots below show the distribution before and after transformations.
+
+```{r Market Log and Scale, Plot, fig.width=12, fig.height=5}
+marketTrans <- market
+marketTrans[,c("ntparts", "ntsets", "ntwanted", "ntinv")] <- lapply(marketTrans[,c("ntparts", "ntsets", "ntwanted", "ntinv")], log1p)
+marketTrans <- as.data.frame(scale(marketTrans))
+
+marketTrans_plot <- marketTrans %>%
+  pivot_longer(everything(), 
+               names_to = "Variable", 
+               values_to = "Value") %>%
+  ggplot(aes(x = Value, fill = Variable)) +
+  geom_histogram(bins = 50, 
+                 alpha = 0.4, 
+                 position = "identity") +
+  labs(title = "Distribution of Market Variables\n(After Transformations)", 
+       x = "Value", 
+       y = "Count")
+
+grid.arrange(marketRaw_plot, marketTrans_plot, ncol=2)
+```
+
+After the transformations, we re-evaluate clustering tendency and PAM to show how change of scale changes partitioning results. 
+
+### 2.2.4 Clustering Tendency on Transformed Market Data (`marketTrans`) {.tabset}
+
+Evaluation of Hopkins' statistic and assessment of its stability using Monte Carlo reveals a similar high level of clustering tendency. However, the ODM now exhibits a more diffuse structure than before, suggesting weaker block separation. The two methods above show inconclusive results; therefore, clustering is performed and analysed.
+
+#### Hopkins' Statistic (with Monte Carlo)
+
+```{r MarketTrans H}
+set.seed(seed)
+h_marketTrans <- get_clust_tendency(marketTrans,
+                               round(0.2 * nrow(marketTrans)),
+                               graph = TRUE,
+                               gradient = list(low = "red", mid = "white", high = "blue"))
+
+
+set.seed(seed)
+h_marketTrans_mc <- replicate(mc_reps,
+                         hopkins::hopkins(marketTrans, 
+                                          m = round(0.2 * nrow(marketTrans))))
+
+knitr::kable(t(as.matrix(summary(h_marketTrans_mc))),
+             caption = paste0("Monte Carlo Stability of Hopkins Statistic for Transformed Market Data (", mc_reps, "runs)"))
+
+```
+
+#### VAT
+
+``` {r MarketTrans Vat}
+h_marketTrans$plot + ggplot2::ggtitle("VAT: Transformed Market Ordered Dissimilarity Matrix")
+```
+
+### 2.2.5 PAM Clustering on Transformed Market Data
+
+#### Search for Optimal $k$ `marketTrans`
+
+```{r Optimal K marketTrans, fig.width=12, fig.height=5}
+
+set.seed(seed)
+marketTrans_sil <- fviz_nbclust(marketTrans, 
+                           FUNcluster = pam,
+                           method = c("silhouette"),
+                           k.max = 10) +
+  ggplot2::ggtitle("Transformed Market: Average Silhouette")
+
+marketTrans_gap <- fviz_nbclust(marketTrans, 
+                           FUNcluster = pam,
+                           method = c("gap_stat"),
+                           k.max = 10) +
+  ggplot2::ggtitle("Transformed Market: Gap Statistic")
+
+marketTrans_k <- pamk(marketTrans,
+                 krange = 3:10)
+
+gridExtra::grid.arrange(marketTrans_sil, marketTrans_gap, ncol = 2)
+```
+
+Optimal number of clusters for `marketTrans` dataset: `r marketTrans_k$nc`
+
+#### PAM clustering and Basic Statistics
+
+```{r PAM Trans Market, fig.width=12, fig.height=8}
+marketTrans_pam <- pam(marketTrans, marketTrans_k$nc)
+
+p_marketTrans <- fviz_cluster(marketTrans_pam, data = marketTrans, 
+             geom = "point", 
+             ellipse.type = "norm",
+             show.clust.cent = TRUE,
+             palette = bricklink$hexNumber[marketTrans_pam$id.med],
+             main = "PAM clustering: market characteristics")
+
+p_marketTrans
+```
+
+```{r PAM Trans Market stripes sil, fig.width=12, fig.height=5}
+marketTrans_pam_kcca <- flexclust::as.kcca(marketTrans_pam, marketTrans)
+pMarketTransStripes <- grid.grabExpr(stripes(marketTrans_pam_kcca, col =bricklink$hexNumber[marketTrans_pam$id.med]))
+pMarketTransSil <- fviz_silhouette(marketTrans_pam, palette = bricklink$hexNumber[marketTrans_pam$id.med])
+gridExtra::grid.arrange(pMarketTransSil, pMarketTransStripes, ncol = 2)
+```
+
+### 2.2.6 Partitioning of Market Characteristics: Evaluation and Interpretation
+
+Partitioning of Market Characteristics is evaluated across three criteria:
+
+- Separation (Average Silhouette Width; Calinski–Harabasz (CH) Index)
+- Stability (Bootstrap Resampling with Jaccard Similarity)
+- Descriptive profiling
+
+#### Separation and Quality
+
+To start we assess the internal validity of the clusters. 
+
+1. Average Silhouette Width: already used earlier in this project, is a measure of how similar each point is to its own cluster compared to the nearest neighbouring cluster.
+
+2. Calinski-Harabasz Index (CH): Computes the ratio of between-cluster to within-cluster dispersion. The higher the value, the denser and better separated the partitions are.
+
+```{r}
+sepQualTable <- data.frame(
+  row.names = c("Number of Clusters (k)", 
+                "Average Silhouette Width", 
+                "Calinski-Harabasz Index"),
+  value = round(c(length(marketTrans_pam$id.med),
+                  marketTrans_pam$silinfo$avg.width, 
+                  fpc::calinhara(marketTrans,
+                                 marketTrans_pam$clustering)), 3)
+)
+  
+kable(sepQualTable, caption = "Separation and quality Metrics (`marketTrans`)") 
+```
+
+Average Silhouette Width of `r round(marketTrans_pam$silinfo$avg.width, 3)` with a high CH Index of over 245 suggests moderately separated clusters. As seen on the plot earlier, there is some overlap between the groups; the clusters seem distinct but not completely disconnected."
+
+#### Stability
+
+``` {r, reps Boots}
+rep_boot <- 500
+```
+
+To investigate the stability of the partition structure, we use `fpc::clusterboot` to bootstrap `r rep_boot` random samples with replacement, re-run PAM and calculate the Jaccard similarity to original clusters.
+
+$$J(C_1, C_2) = \frac{a}{a + b + c}$$
+
+- a: The number of pairs of points in the same cluster in both C~1~ and C~2~.
+- b: The number of pairs in the same cluster in C~1~ but in different clusters in C~1~.
+- c: The number of pairs in different clusters in C~2~ but in the same cluster in C~2~.
+
+The Jaccard similarity coefficient is a metric allowing us to assess whether the same points belong to the same clusters in separate partition objects. Optimal values are above 0.50 with 0.60-0.75 indicating valid underlying patterns and above 0.75 indicating highly stable clusters.
+
+```{r Bootstrap Market}
+
+set.seed(seed)
+
+marketTrans_boot <- fpc::clusterboot(marketTrans,
+                                     B = rep_boot,
+                                     bootmethod = "boot",
+                                     clustermethod = fpc::pamkCBI,
+                                     k = marketTrans_k$nc,
+                                     usepam = T,
+                                     count = F)
+
+stabilityTable <- data.frame(Cluster = seq_len(marketTrans_k$nc),
+                             Size = as.vector(table(marketTrans_pam$clustering)),
+                             Medoid = rownames(marketTrans)[marketTrans_pam$id.med],
+                             Mean_Jaccard  = round(marketTrans_boot$bootmean, 3),
+                             Dissolved_Pct = round((marketTrans_boot$bootbrd / marketTrans_boot$B) * 100, 1),
+                             Recovered_Pct = round((marketTrans_boot$bootrecover / marketTrans_boot$B) * 100, 1)
+)
+
+kable(stabilityTable, caption = paste0("Bootstrap Cluster Stability (", marketTrans_boot$B, " Resamples)"))
+```
+
+The bootstrapping reveals that the clusters are mostly concrete and stable.
+
+- Clusters 1-4 are all stable clusters, each with a mean Jaccard score over 0.70, with dissolution rates below 10%. These are reproducible groupings from the set.
+
+- Cluster 5 is the only unstable cluster, with the lowest mean Jaccard score of ~0.52 and a dissolution rate of almost 60%. This means that points from cluster 5 during the resampling often landed in clusters other than their original one.
+
+#### Profiling of The Clusters and Interpretations
+
+Even though PAM is fitted on the `marketTrans` dataset, cluster profiling maps the assignments back onto the original `market` scale, so that all values are directly readable and interpretable. The characterisation uses three sources of information to interpret the profile:
+
+- Medoid Examination: Inspects the exact LEGO colour serving as each cluster centre.
+- Descriptive Cluster Profiles: Summarises cluster sizes, original-scale medians, and the top three colours by set appearances (`Most_Sets`) and marketplace demand (`Most_Wanted`).
+- Standardized Profile Plots: Compares median Z-scores across all five features via a multi-cluster line plot and faceted bar charts.
+
+```{r Market Medoid Examiantion}
+market_medoids <- market[marketTrans_pam$id.med,]
+market_medoids$cluster <- seq_len(marketTrans_k$nc)
+kable(market_medoids,
+      caption = "Cluster Medoids\nRepresentative LEGO Colours, Values on Original Scale")
+```
+
+```{r Descriptive Table}
+market_profile <- market %>% 
+  mutate(colour = rownames(market),
+         cluster = factor(marketTrans_pam$clustering)) %>% 
+  group_by(cluster) %>% 
+  summarise(
+    count = n(),
+    Parts = round(median(ntparts)),
+    Sets = round(median(ntsets)),
+    Wanted = round(median(ntwanted)),
+    Inventory = round(median(ntinv)),
+    Lasting = round(median(lasting)),
+    Most_Sets = paste(head(colour[order(-ntsets)],3), collapse = ", "),
+    Most_Wanted = paste(head(colour[order(-ntwanted)],3), collapse = ", "),
+    .groups = "drop")
+
+kable(market_profile, caption = "Market Cluster Profiles\nMedians on Original Scale")
+```
+
+```{r Calculate Z-scores, fig.width=12, fig.height=5}
+marketTrans_z <- marketTrans %>%
+  mutate(cluster = factor(marketTrans_pam$clustering)) %>%
+  group_by(cluster) %>%
+  summarise(across(everything(), 
+                   median)) %>%
+  tidyr::pivot_longer(-cluster, 
+                      names_to = "Variable", 
+                      values_to = "Median_Z")
+
+ggplot(marketTrans_z, 
+       aes(Variable, 
+           Median_Z, 
+           color = cluster,
+           shape = cluster,
+           group = cluster)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line(linewidth = 1, linetype = "dotted") +
+  geom_point(size = 4) +
+  scale_color_manual(
+    values = bricklink$hexNumber[marketTrans_pam$id.med]) +
+  labs(x = NULL, 
+       y = "Median Z-Score",
+       title = "Market Cluster Profiles\nMedians on Transformed Scale\nLine Plot") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, 
+                                   hjust = 1))
+
+ggplot(marketTrans_z, 
+       aes(Variable, Median_Z, fill = Median_Z)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_col(width = 0.9) +
+  scale_fill_gradient2(
+    low = "red4",
+    name = "Median Z-Score") +
+  facet_wrap(~ cluster, ncol = 5) +
+  labs(x = NULL,
+       y = "Median Z-Score",
+       title = "Market Cluster Profiles\nMedians on Transformed Scale\nBar Plots for each cluster") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, 
+                                   hjust = 1),
+        legend.position = "right",
+        legend.title = element_text(angle = 270),
+        legend.title.position = "right")
+
+```
+
+#### Interpretation of the Clusters
+
+-   **Cluster 1: UNIQUES** ($n = 63$ / Medoid: Trans-Aqua):
+
+    -   Achieves just below average scores in all domains. Groups newer specialty colours (Satin Trans-Light Blue, Neon Yellow) alongside short-lived historical shades (Very Light Bluish Gray, Rust).
+
+-   **Cluster 2: STAPLES** ($n = 18$ / Medoid: Dark Red)
+
+    -   Dominates every metric; these are the foundations of the LEGO palette with Black, White, and Red, and have been in production for most of the company's history with a wide variety of uses and massive part diversity.
+
+-   **Cluster 3: NEW LEADERS** ($n = 29$ / Medoid: Dark Purple):
+
+    -   These colours exhibit high production volume and demand but without a long history. This cluster reflects the LEGO palette overhaul during the 2000s, with new colours replacing some of the old basics. 
+
+-   **Cluster 4: NOVELTIES** ($n = 40$ / Medoid: Dark Salmon):
+
+    -   Ranks lowest on every variable. This cluster collects colours with the lowest median life-span of 2 years, suggesting experimental and not well-established colours. These include promotional or theme-exclusive colours.
+
+-   **Cluster 5: MISCELLANEOUS ** ($n = 26$ / Medoid: Trans-Neon Orange):
+
+    -   As evaluated earlier, the most unstable of the clusters. Slightly above average scores; group with the second longest-running production. Although included in a sizeable number of sets, its demand is not especially high. These include classic translucent colours and steady secondary tones.
+    
+    
+### 2.2.7 Market Characteristics Summary of Clustering
+
+Clustering on the raw `market` dataset resulted in a heavily skewed, unbalanced partition due to high-magnitude differences across the variables. Raw inventory and counts of marketplace info reach thousands, while lifespan spans only a few decades; pairwise distance comparisons were driven mostly by the outliers. This resulted in isolating a handful of colours into tiny groups while around 70% of the colour catalogue were put into a single cluster.
+
+Applying the `log1p` function on count features and subsequently applying the `scale` function on all of the variables eliminated this scale bias. The `marketTrans` oobject was created and evaluated based on its clustering tendency. Although VAT did not reveal any regular structure, the internal validation and resampling diagnostic confirmed that the $k = 5$ partition is stable, with a CH index of 245.14, an average silhouette width of 0.371 and high bootstrap Jaccard scores across the clusters. Besides cluster 5, the rest of the clusters demonstrate strong within-cluster homogeneity and clear between-cluster separation.
+
+Finally, transformations of raw data proved `lasting` to be one of the crucial features in differentiating between cluster profiles. PAM performed on `marketTrans` allowed us to create meaningful clusters; descriptive profiling and Z-score evaluation showed how the grouped colours reveal specific market archetypes.
+
+## 2.3 Colour Characteristics Clustering
+
+After analysing market information on LEGO colour we move forward to understand whether the LEGO colours can be grouped into a few main palettes based on their CIELAB values. This section will rely on the `labInfo` dataset prepared in the 2.1.1.
+
+### 2.3.1 Clustering Tendency on CIELAB values {.tabset}
+
+#### Hopkins' Statistic (with Monte Carlo)
+
+The introductory analysis of clustering tendency reveals that the $H$ value for CIELAB values is less stable than it was in the market dataset, although mean and median values remain high enough to justify partitioning. Visual assessment exhibits rather noisy random data, suggesting that clusters may not be distinct.
+
+```{r labInfo H}
+set.seed(seed)
+h_labInfo <- get_clust_tendency(labInfo,
+                               round(0.2 * nrow(labInfo)),
+                               graph = TRUE,
+                               gradient = list(low = "red", mid = "white", high = "blue"))
+
+
+set.seed(seed)
+h_labInfo_mc <- replicate(mc_reps,
+                         hopkins::hopkins(labInfo, 
+                                          m = round(0.2 * nrow(labInfo))))
+
+knitr::kable(t(as.matrix(summary(h_labInfo_mc))),
+             caption = paste0("Monte Carlo Stability of Hopkins Statistic for CIELAB Values (", mc_reps, "runs)"))
+```
+
+#### VAT
+
+``` {r labInfo Vat}
+h_labInfo$plot + ggplot2::ggtitle("VAT: CIELAB Values Ordered Dissimilarity Matrix")
+```
+
+### 2.3.2 PAM Clustering on CIELAB Values
+
+#### Search for Optimal $k$ `labInfo`
+
+```{r Optimal K `labInfo`, fig.width=12, fig.height=5}
+
+set.seed(seed)
+
+
+labInfo_sil <- fviz_nbclust(labInfo, 
+                           FUNcluster = pam,
+                           method = c("silhouette"),
+                           k.max = 10) +
+  ggplot2::ggtitle("CIELAB Values: Average Silhouette")
+
+labInfo_gap <- fviz_nbclust(labInfo, 
+                           FUNcluster = pam,
+                           method = c("gap_stat"),
+                           k.max = 10) +
+  ggplot2::ggtitle("CIELAB Values: Gap Statistic")
+
+labInfo_k <- pamk(labInfo,
+                 krange = 3:10)
+
+gridExtra::grid.arrange(labInfo_sil, labInfo_gap, ncol = 2)
+```
+
+Optimal number of clusters for `labInfo` dataset: `r labInfo_k$nc`
+
+#### PAM clustering and Basic statistics
+
+```{r PAM labInfo, fig.width=12, fig.height=8}
+labInfo_pam <- pam(labInfo, labInfo_k$nc)
+
+p_labInfo <- fviz_cluster(labInfo_pam, data = labInfo, 
+             geom = "point", 
+             ellipse.type = "norm",
+             show.clust.cent = TRUE,
+             palette = bricklink$hexNumber[labInfo_pam$id.med],
+             main = "PAM clustering: Colours characteristics")
+
+p_labInfo
+```
+
+```{r PAM labInfo stripes sil, fig.width=12, fig.height=5}
+labInfo_pam_kcca <- flexclust::as.kcca(labInfo_pam, labInfo)
+pLabInfoStripes <- grid.grabExpr(stripes(labInfo_pam_kcca, col = bricklink$hexNumber[labInfo_pam$id.med]))
+pLabInfoSil <- fviz_silhouette(labInfo_pam, palette = bricklink$hexNumber[labInfo_pam$id.med])
+gridExtra::grid.arrange(pLabInfoSil, pLabInfoStripes, ncol = 2)
+```
+
+#### Colours Swatches for Partition
+
+``` {r Colour Swatches with Medoids, fig.width=12, fig.height=9}
+par(mfrow = c(1, length(labInfo_pam$id.med)), fg = NA)
+
+for (i in seq_along(labInfo_pam$id.med)) {
+  cols <- setNames(bricklink$hexNumber, make.unique(as.character(bricklink$name)))[names(which(labInfo_pam$clustering == i))]
+  cols <- cols[order(farver::decode_colour(cols, to = "lab")[, "l"])]
+  
+  swatch(cols)
+  title(main = paste0("Cluster ", i, ",\nMedoid: ", rownames(labInfo_pam$medoids)[i]), 
+        line = -1)
+  
+  pos <- which(names(rev(cols)) == rownames(labInfo_pam$medoids)[i])
+  rect(0, (pos - 1) * 1.1 + 0.1, 1, pos * 1.1, border = "black", lwd = 3, xpd = TRUE)
+}
+
+par(old_par)
+```
+
+### 2.3.3 Interpretation of the Visual Clusters
+
+Partitioning based on CIELAB values grouped LEGO colours into 4 colour groups, with an average silhouette width of $0.40$. The clusters are as follows:
+
+* **Cluster 1: LOWCHROMA** (Medoid: Light Bluish Gray):
+  * The largest cluster, spanning the full lightness ($L^*$) spectrum from near-black through desaturated colours to pure white. Captures low-chroma colours clustered near the central neutral axis of CIELAB space.
+* **Cluster 2: SPACE** (Medoid: Dark Purple):
+  * Groups cool tones, ranging from deep navy blues to light violets and magentas. Occupies the negative-$b^*$ region of the perceptual colour space.
+* **Cluster 3: CITRUS** (Medoid: Lime):
+  * Mainly bright greens and lime shades with a selection of different yellows. Covers the positive-$b^*$, negative-to-neutral-$a^*$ quadrant.
+* **Cluster 4: AUTUMN** (Medoid: Dark Nougat):
+  * Collects warm earth tones and bright reds, second largest of the clusters with wide range of browns, red, oranges with some pink accents. Occupies the positive-$a^*$, positive-$b^*$ quadrant.
+
+An average silhouette width of $0.40$ reflects moderate cluster separation, which aligns with the continuous nature of human colour perception—colours transition smoothly along lightness and hue gradients rather than forming isolated islands. Despite the blurry boundaries seen in the VAT matrix, PAM partitions the LEGO palette along clear perceptual lines. The resulting partition with medoids: *Light Bluish Gray*, *Dark Purple*, *Lime*, and *Dark Nougat* forms a balanced, high-contrast representative palette for the image recolouring stage.
+
+## 2.4 Comparing Market and Visual Partitions
+
+To finish this chapter, let's compare how similar or different the two partitions are. To inspect this, three metrics are calculated:
+
+- **Adjusted Mutual Information (AMI):** A measure quantifying the shared information between partitions $C_1$ and $C_2$, adjusted for chance agreement [@vinh_2010]:
+
+  $$\text{AMI}(C_1, C_2) = \frac{I(C_1, C_2) - E\big[I(C_1, C_2)\big]}{\frac{1}{2}\big[H(C_1) + H(C_2)\big] - E\big[I(C_1, C_2)\big]}$$
+
+  - $I(C_1, C_2)$: Mutual Information between $C_1$ and $C_2$.
+  - $H(C_1), H(C_2)$: Shannon entropies of the cluster distributions in $C_1$ and $C_2$.
+  - $E\big[I(C_1, C_2)\big]$: Expected Mutual Information between two random partitions with the same cluster sizes under a hypergeometric model.
+
+- **Adjusted Rand Index (ARI):** A measure evaluating agreement across both co-assigned and separated pairs, corrected for chance:
+
+  $$\text{ARI}(C_1, C_2) = \frac{a - \frac{(a + b)(a + c)}{\binom{N}{2}}}{\frac{1}{2}\big[(a + b) + (a + c)\big] - \frac{(a + b)(a + c)}{\binom{N}{2}}}$$
+
+  - $a, b, c$: Pair counts defined identically to the Jaccard Index in subsection 2.2.6.
+  - $\binom{N}{2} = \frac{N(N - 1)}{2}$: Total number of distinct observation pairs across all $N$ colours.
+
+- **Jaccard Index:** Introduced in subsection 2.2.6 to evaluate cluster stability with bootstrapping.
+
+To note*: As there is unequal number of clusters ($k_{marketTrans} = 5$ and $k_{labInfo} = 4$) one-to-one correspondence between partitions is formally impossible. Consequently, none of the three metrics can reach the maximum of $1$. While AMI and ARI account for the unequal number of cluster counts with chance-correction terms, the standard Jaccard Index penalises this difference directly, as it shrinks the value of co-assigned pairs ($a$), and inflates different pairs ($b$ or $c$), resulting in structurally lower values.
+
+```{r}
+
+bricklink$marketCluster <- factor(marketTrans_pam$clustering, 
+                                  labels = c("UNIQUES", 
+                                             "STAPLES", 
+                                             "NEW LEADERS", 
+                                             "NOVELTIES", 
+                                             "MISCELLANEOUS"))
+bricklink$CIELABCluster <- factor(labInfo_pam$clustering, 
+                                  labels = c("LOWCHROMA",
+                                             "SPACE",
+                                             "CITRUS",
+                                             "AUTUMN"))
+
+market_clusters <- bricklink$marketCluster
+visual_clusters <- bricklink$CIELABCluster
+```
+
+```{r Contingency table}
+knitr::kable(
+  addmargins(table(Market = market_clusters, Visual = visual_clusters)),
+  caption = "Contingency Table of LEGO Colours Across Market and Visual Clusters"
+)
+```
+
+```{r Ari and Jaccard}
+
+knitr::kable(
+  data.frame(
+    Metric = c("Adjusted Mutual Information (AMI)", "Adjusted Rand Index (ARI)","Jaccard Index"),
+    Value  = round(c(aricode::AMI(market_clusters, visual_clusters),
+      flexclust::comPart(market_clusters, visual_clusters, type = c("ARI", "J"))
+    ), 4)
+  ),
+  row.names = FALSE,
+  caption = "Agreement Between Market (k = 5) and Visual (k = 4) Partitions"
+)
+```
+
+All three metrics confirm that clustering LEGO colours by market and visual characteristics produces fundamentally different partitions. Even accounting for the structural limitation of different numbers of clusters $k_{marketTrans} \neq k_{labInfo}$, both AMI and ARI metrics indicate independence between colours' market dynamics and visual information. The Jaccard Index yields the highest value of the three metrics mainly because the two largest clusters from both partitions share 31 colours.
+
+## 2.5 Conclusions
+
+The performed analyses allow us to address the stated hypotheses:
+
+> H3: As shown in the case of the `market` dataset, using raw skew data with different scales lead to the creation of uneven clusters.
+
+> H4a & H4b: Both market (after appropriate transformations) and visual characteristics produced clusters that revealed market bins and coherent colour palettes.
+
+> H5: Market and visual clusters proved to be independent, with low agreement between the two partitions.
+
+The analyses in this chapter showed that clustering algorithms could be used for investigating real market dynamics and creating colour palettes coherent within each other with distinct chroma and hue values. This proves the diversity in the usage of PAM and how it may give insight into different types of data.
+
+The five market clusters and four visual clusters are carried forward as restrictive palettes for the LEGO set recolouring experiment in Chapter 3
+
+# Chapter 3: Recolouring LEGO Sets 
+
+The cluster analysis of the LEGO colours dataset available on the BrickLink website provided insight into the dynamics of the second-hand LEGO marketplace and perceptual colour values available within the LEGO colour palette.
+
+This chapter is an experimental study of how cluster analysis can be useful in creating alternative colour-variants of existing LEGO sets. Each cluster from the two partitionings based on market and visual characteristics can be treated as a restrictive colour palette for building a LEGO set.
+
+Envision yourself in two positions:
+
+1) For partion on **Market Characteristic**: You are _a LEGO collector_, trying to reconstruct your favourite LEGO set with colours based on their membership to different market groups.
+2) For partion on **Visual Characteristic**: You are _a LEGO designer_, with a task to re-design an existing LEGO product into a new theme and have to match the theme colour palette.
+
+Using image segmentation for the perceptual colour space and the given restrictive palette, we may illustrate the possible work result of _a LEGO collector_ and _a LEGO designer_.
+
+Methodology for this chapter:
+
+- Select the image segmentation performed in the CIELAB colour-space from Section 1.3 {LegoSet}.
+- Select a colour palette based on the clusters from Chapter 2 {Palette}.
+- Map {Palette} onto the medoids of {LegoSet}. To map the {Palette}, calculate the $\Delta E_{00}$ between each colour in the {Palette} and each medoid of {LegoSet}. For each medoid, choose the closest colour from the {Palette}.^1,2^ 
+- Re-construct the image using {LegoSet} with the new colours chosen from {Palette}
+
+Annotation 1: To account for 'The White Background Issue', the white medoid included in each {LegoSet} partition will be fixed and no new colour will be mapped onto it.
+
+Annotation 2: Naive approach is applied here, but it should be noted that there is a chance that one colour from the palette is chosen to be mapped onto two different medoids.
+
+## 3.1 Preparation and Preview of Cluster Palettes
+
+```{r Palettes Ch3}
+marketPalettes <- split(bricklink, bricklink$marketCluster)
+CIELABPalettes <- split(bricklink, bricklink$CIELABCluster)
+```
+
+### Palettes from Market Characteristics {.unlisted .unnumbered}
+```{r M Palettes Visualisation, fig.width=12, fig.height=8}
+par(mfrow = c(1, length(marketPalettes)), fg = NA)
+
+for (x in names(marketPalettes)) {
+  pal <- marketPalettes[[x]]
+  swatch(pal$hexNumber[order(pal$l)])
+  title(main = paste0(x, "\nn = ", nrow(pal)),
+        line = -1)}
+
+par(old_par)
+```
+
+### Palettes from Visual Characteristics {.unlisted .unnumbered}
+```{r Lab Palettes Visualisation, fig.width=12, fig.height=8}
+par(mfrow = c(1, length(CIELABPalettes)), fg = NA)
+
+for (x in names(CIELABPalettes)) {
+  pal <- CIELABPalettes[[x]]
+  swatch(pal$hexNumber[order(pal$l)])
+  title(main = paste0(x, "\nn = ", nrow(pal)),
+        line = -1)}
+
+par(old_par)
+```
+
+## 3.2 Preparation of Recolouring Algorithm 
+
+```{r Recoloring Algorithm following the methodology}
+chooseNewMedoidsColours <- function(imgCLARA, palette){
+  imgMedoids <- imgCLARA$medoids
+  dist_mat <- compare_colour(imgMedoids,
+                             as.matrix(palette[, c("l", "a", "b")]),
+                             from_space = "lab", 
+                             method = "cie2000")
+  
+  new_hex <- palette$hexNumber[apply(dist_mat, 
+                                     1, 
+                                     which.min)]
+  
+  # if original cluster included white and it is not already present in new_hex-> add white 
+  if (max(imgMedoids[, "l"]) > 98 && !("#FFFFFF" %in% new_hex)) {
+  new_hex[which.max(imgMedoids[, "l"])] <- "#FFFFFF"
+}
+  
+  return(new_hex)
+}
+
+applyNewColours <- function(img, imgCLARA, palette) {
+  
+  dm1 <- dim(img)
+  newMedoids <- chooseNewMedoidsColours(imgCLARA, palette)
+  result <- matrix(newMedoids[imgCLARA$clustering], nrow = dm1[1], ncol = dm1[2])
+  
+  return(result)
+}
+
+plotNewColours <- function(img, imgCLARA, palette, label = NULL) {
+  recoloured <- applyNewColours(img, imgCLARA, palette)
+  
+  plot.new()
+  plot.window(xlim = c(0, ncol(recoloured)), 
+              ylim = c(0, nrow(recoloured)),
+              asp = 1, 
+              xaxs = "i", 
+              yaxs = "i")
+  
+  rasterImage(recoloured, 0, 0, ncol(recoloured), nrow(recoloured))
+  
+  mtext(label, side = 3, line = 0, cex = 0.85, font = 1)
+}
+
+```
+
+## 3.3 LEGO Sets Reconstructed with Restrictive Palettes {.tabset}
+
+Each set tab shows the baseline CIELAB segmentation at the top, followed by sub-tabs comparing the five market palettes and four visual palettes alongside their mapped HEX swatches.
+
+### Seaside House 7346-1 {.tabset}
+
+```{r Baseline Palettes House, fig.width=10, fig.height=6}
+par(mfrow = c(1, 2))
+plot.new()
+plot.window(xlim = c(0, ncol(seasideHouse_paint$CIELAB)),
+            ylim = c(0, nrow(seasideHouse_paint$CIELAB)),
+            asp = 1,
+            xaxs = "i",
+            yaxs = "i")
+rasterImage(seasideHouse_paint$CIELAB, 0, 0, ncol(seasideHouse_paint$CIELAB), nrow(seasideHouse_paint$CIELAB))
+mtext("Original Image Segmented\n in CIELAB colourspace", side = 3, line = 0, cex = 1, font = 2)
+
+swatch(seasideHouse_HEX$CIELAB)
+mtext("Colours of original medoids", side = 3, line = -1, cex = 1, font = 2)
+par(old_par)
+```
+
+#### Market Palettes
+
+```{r Market Palettes House, fig.width=12, fig.height=9.5}
+graphics::layout(rbind(c(1, 3, 5),
+                       c(2, 4, 6),
+                       c(7, 9, 0),
+                       c(8, 10, 0)),
+                 heights = c(5, 1.5, 5, 1.5))
+
+for (palette in names(marketPalettes)) {
+  par(mar = c(0.2, 0.4, 3.8, 0.4))
+  
+  plotNewColours(seasideHouse, 
+                 seasideHouse_CLARA$CIELAB, 
+                 marketPalettes[[palette]],
+                 label = paste0("Market-", palette, " palette"))
+  
+  cols <- chooseNewMedoidsColours(seasideHouse_CLARA$CIELAB, marketPalettes[[palette]])
+  par(mar = c(3.8, 0.4, 0.2, 0.4))
+  barplot(rep(1, length(cols)), 
+          col = cols, 
+          names.arg = cols,
+          space = 0,
+          border = NA, 
+          axes = FALSE, 
+          cex.names = 0.8)
+}
+
+graphics::layout(1)
+par(old_par)
+```
+
+#### Visual Palettes
+
+```{r Visual Palettes House, fig.width=10, fig.height=9.5}
+graphics::layout(rbind(c(1, 3),
+                       c(2, 4),
+                       c(5, 7),
+                       c(6, 8)),
+                 heights = c(5, 1.5, 5, 1.5))
+
+for (palette in names(CIELABPalettes)) {
+  par(mar = c(0.2, 0.4, 3.8, 0.4))
+  
+  plotNewColours(seasideHouse, 
+                 seasideHouse_CLARA$CIELAB, 
+                 CIELABPalettes[[palette]],
+                 label = paste0("Visual-", palette, " palette"))
+  
+  cols <- chooseNewMedoidsColours(seasideHouse_CLARA$CIELAB, CIELABPalettes[[palette]])
+  par(mar = c(3.8, 0.4, 0.2, 0.4))
+  barplot(rep(1, length(cols)), 
+          col = cols, 
+          names.arg = cols,
+          space = 0, 
+          border = NA, 
+          axes = FALSE, 
+          cex.names = 0.8)
+}
+
+graphics::layout(1)
+par(old_par)
+```
+
+### Cole's Titan Dragon Mech 71821-1 {.tabset}
+
+```{r Baseline Palettes Mech, fig.width=10, fig.height=6}
+par(mfrow = c(1, 2))
+plot.new()
+plot.window(xlim = c(0, ncol(dragonMech_paint$CIELAB)),
+            ylim = c(0, nrow(dragonMech_paint$CIELAB)),
+            asp = 1,
+            xaxs = "i",
+            yaxs = "i")
+rasterImage(dragonMech_paint$CIELAB, 0, 0, ncol(dragonMech_paint$CIELAB), nrow(dragonMech_paint$CIELAB))
+mtext("Original Image Segmented\n in CIELAB colourspace", side = 3, line = 0, cex = 1, font = 2)
+
+swatch(dragonMech_HEX$CIELAB)
+mtext("Colours of original medoids", side = 3, line = -1, cex = 1, font = 2)
+par(old_par)
+```
+
+#### Market Palettes
+
+```{r Market Palettes Mech, fig.width=12, fig.height=9.5}
+graphics::layout(rbind(c(1, 3, 5),
+                       c(2, 4, 6),
+                       c(7, 9, 0),
+                       c(8, 10, 0)),
+                 heights = c(5, 1.5, 5, 1.5))
+
+for (palette in names(marketPalettes)) {
+  par(mar = c(0.2, 0.4, 3.8, 0.4))
+  
+  plotNewColours(dragonMech, 
+                 dragonMech_CLARA$CIELAB, 
+                 marketPalettes[[palette]],
+                 label = paste0("Market-", palette, " palette"))
+  
+  cols <- chooseNewMedoidsColours(dragonMech_CLARA$CIELAB, marketPalettes[[palette]])
+  par(mar = c(3.8, 0.4, 0.2, 0.4))
+  barplot(rep(1, length(cols)), 
+          col = cols, 
+          names.arg = cols,
+          space = 0, 
+          border = NA, 
+          axes = FALSE, 
+          cex.names = 0.8)
+}
+
+graphics::layout(1)
+par(old_par)
+```
+
+#### Visual Palettes
+
+```{r Visual Palettes Mech, fig.width=10, fig.height=9.5}
+graphics::layout(rbind(c(1, 3),
+                       c(2, 4),
+                       c(5, 7),
+                       c(6, 8)),
+                 heights = c(5, 1.5, 5, 1.5))
+
+for (palette in names(CIELABPalettes)) {
+  par(mar = c(0.2, 0.4, 3.8, 0.4))
+  
+  plotNewColours(dragonMech, 
+                 dragonMech_CLARA$CIELAB, 
+                 CIELABPalettes[[palette]],
+                 label = paste0("Visual-", palette, " palette"))
+  
+  cols <- chooseNewMedoidsColours(dragonMech_CLARA$CIELAB, CIELABPalettes[[palette]])
+  par(mar = c(3.8, 0.4, 0.2, 0.4))
+  barplot(rep(1, length(cols)), 
+          col = cols, 
+          names.arg = cols,
+          space = 0, 
+          border = NA, 
+          axes = FALSE, 
+          cex.names = 0.8)
+}
+
+graphics::layout(1)
+par(old_par)
+```
+
+### Wildflower Bouquet 10313-1 {.tabset}
+
+```{r Baseline Palettes Flowers, fig.width=10, fig.height=6}
+par(mfrow = c(1, 2))
+plot.new()
+plot.window(xlim = c(0, ncol(flowers_paint$CIELAB)),
+            ylim = c(0, nrow(flowers_paint$CIELAB)),
+            asp = 1,
+            xaxs = "i",
+            yaxs = "i")
+rasterImage(flowers_paint$CIELAB, 0, 0, ncol(flowers_paint$CIELAB), nrow(flowers_paint$CIELAB))
+mtext("Original Image Segmented\n in CIELAB colourspace", side = 3, line = 0, cex = 1, font = 2)
+
+swatch(flowers_HEX$CIELAB)
+mtext("Colours of original medoids", side = 3, line = -1, cex = 1, font = 2)
+par(old_par)
+```
+
+#### Market Palettes
+
+```{r Market Palettes Flowers, fig.width=12, fig.height=9.5}
+graphics::layout(rbind(c(1, 3, 5),
+                       c(2, 4, 6),
+                       c(7, 9, 0),
+                       c(8, 10, 0)),
+                 heights = c(5, 1.5, 5, 1.5))
+
+for (palette in names(marketPalettes)) {
+  par(mar = c(0.2, 0.4, 3.8, 0.4))
+  
+  plotNewColours(flowers, 
+                 flowers_CLARA$CIELAB, 
+                 marketPalettes[[palette]],
+                 label = paste0("Market-", palette, " palette"))
+  
+  cols <- chooseNewMedoidsColours(flowers_CLARA$CIELAB, marketPalettes[[palette]])
+  par(mar = c(3.8, 0.4, 0.2, 0.4))
+  barplot(rep(1, length(cols)), 
+          col = cols, 
+          names.arg = cols,
+          space = 0, 
+          border = NA, 
+          axes = FALSE, 
+          cex.names = 0.8)
+}
+
+graphics::layout(1)
+par(old_par)
+```
+
+#### Visual Palettes
+
+```{r Visual Palettes Flowers, fig.width=10, fig.height=9.5}
+graphics::layout(rbind(c(1, 3),
+                       c(2, 4),
+                       c(5, 7),
+                       c(6, 8)),
+                 heights = c(5, 1.5, 5, 1.5))
+
+for (palette in names(CIELABPalettes)) {
+  par(mar = c(0.2, 0.4, 3.8, 0.4))
+  
+  plotNewColours(flowers, 
+                 flowers_CLARA$CIELAB, 
+                 CIELABPalettes[[palette]],
+                 label = paste0("Visual-", palette, " palette"))
+  
+  cols <- chooseNewMedoidsColours(flowers_CLARA$CIELAB, CIELABPalettes[[palette]])
+  par(mar = c(3.8, 0.4, 0.2, 0.4))
+  barplot(rep(1, length(cols)), 
+          col = cols, 
+          names.arg = cols,
+          space = 0, 
+          border = NA, 
+          axes = FALSE, 
+          cex.names = 0.8)
+}
+
+graphics::layout(1)
+par(old_par)
+```
+
+## 3.4 Evaluation of Recolouring Results
+
+The recolouring experiment demonstrates that both the **LEGO collector** and the **LEGO designer** can be successful in their respective goals using cluster-restricted palettes, although both of them encounter visual trade-offs and practical limitations.
+
+### **The LEGO Collector**: Reconstructing Sets Within Market Cluster (`marketTrans`)
+
+The **collector** can effectively rebuild their favourite sets while preserving a recognizable visual identity, though how faithfully a set translates depends heavily on its original colour composition.
+
+- **Strong Identity of Neutral Palettes**: Sets built with natural and neutral tones -- such as _Cole's Titan Dragon Mech_ with white, greys, browns, gold, and black -- are preserved across almost every market palette. As universal colours each have their representation in different groups, the mech retains its original colour-form; the only significant difference is `MISCELLANEOUS`, where a slight shift to navy appears."
+
+- **The Two-Faced `STAPLES`**: While sets with traditional colour blocking like _Seaside House_ are best recreated using the `STAPLES` palette, keeping the bright solid colours intact, in every other cluster the set is somewhat lost in translation, although `MISCELLANEOUS` is second best retain general colour choice for the product. On the other hand, when any nuanced colouring is introduced in the set, `STAPLES` seem to completely miss the mark on the task. The _Wildflower Bouquet_ is rebuilt quite efficiently in all groups except `STAPLES`, as they are the only ones missing any magentas, oranges, or just naturally-toned colours. The `STAPLES` changes the botanical set into hard primary colours and flat beige.
+
+- **Versatile `MISCELLANEOUS`**: Although `MISCELLANEOUS` does not always reliably reconstruct the original colours of a set, it consistently maintains the general idea behind its colour scheme. Based on visual assessment, if the **collector** were given a singular group to work with, this one would provide the best average result across all three sets.
+
+### **The LEGO Designer**: Thematic Recolouring with Visual Clusters (`labInfo`)
+
+Partitioning the LEGO colour catalogue in CIELAB space provides a **designer** with cohesive, theme-specific palettes that apply a unified tint across an entire build while maintaining lightness contrast between dark and light bricks.
+
+- **Thematic Reinterpretation**: Mapping the palettes onto the LEGO sets reveals new interpretations of the existing sets. `LOWCHROMA` serves as a muted, prototype basis of the set to evaluate the structure of the build without somewhat distracting colours; `SPACE` shifts the build into a more sci-fi or aquatic theme; `CITRUS` shifts the palette into a more vibrant, lively natural environment, while `AUTUMN` produces the most cosy feel, transforming blue shades into warm tones.
+
+- **Colour is Not Enough**: Simply changing the colour is not enough to translate a set from one theme into another. The main differences besides colours are distinct architectural silhouettes, specialised parts, and functional details. Look at the _Seaside House_ in the Visual-SPACE palette: although the colours suggest a cosmic realm, the house itself is still 'down-to-Earth'.
+
+- **Botanicals Flexibility**: Among the three evaluated sets, thematic recolouring is most convincing in the case of _Wildflower Bouquet_. This botanical set represents organic flowers which may naturally occur in a variety of shades. Shifting between the palettes creates a realistic flower arrangement even without additional changes in the silhouette of the product.
+
+
+# Closing Statement and Discussion
+
+This project took it upon itself to explore the diverse use of clustering algorithms -- especially PAM and CLARA -- and their applications. LEGO bricks, the LEGO colour catalogue, and the second-hand marketplace were the main interest of the paper and provided a unique dataset to work with. Each chapter provided and analysed a different way of utilising clustering, varying in the scope of the study.
+
+Seven colour-spaces were evaluated to reveal which would be the best for image segmentation using CLARA, with the goal of preserving the perceptual colour palette of LEGO product sets. As expected, CIELAB and OKLAB were leaders in this respect, although the specific limitation of the used metrics favouring them should not be ignored. I believe these results could be extrapolated from LEGO product sets to general image representation when one may need to use a restrictive colour palette.
+
+
+The dataset about marketplace information of the LEGO colours catalogue from BrickLink was analysed with clustering. In the first iteration, we could see how working on data with huge differences in magnitude affects the clustering procedure, and led to the creation of uneven clusters with low counts of observations grouped into a cluster based solely on their high magnitudes. Transforming the skewed market data with the `log1p` transformation and scaling all the features with `scale` allowed for an even partition with interpretable clusters. Each cluster revealed how colours can be understood in terms of their supply, demand and longevity of production. Using hex code identifiers, CIELAB values of LEGO colours were extracted and clustering was performed to reveal thematic palettes available in the catalogue. Both of the analyses resulted in sensible, stable and distinct clusters which helped to understand the marketplace dynamics of LEGO colours and see whether these dynamics were similar to the visual characteristics of the colours. The agreement metrics confirmed that the two paritions are independent.
+
+Finally, an exploratory experiment was conducted, combining image segmentations with the results of palette extraction from the market and visual characteristics of LEGO colours. This experiment proved that CLARA for image segmentation and PAM for palette extraction could be useful to re-imagine LEGO products with an alternative colour-scheme. The recolouring proved that both _LEGO collector_ and _LEGO designer_ could complete their tasks, with restrictions on the colours to use, but not without limitations. Most importantly, this experiment showed the diverse use of clustering algorithms and how they can be utilised in abstract projects like recolouring LEGO products with restrictive palettes. The algorithm used in the experiment could be replaced by more optimal one-to-one assigment preventing distinct brick colour from collapsing onto the same shade from the original medoid palette.
+
+The main contribution of this project is to show variety in how clustering algorithms work, the areas they excel at, and what the main limitations are when applying them to empirical data. Importantly, this study used only two partition methods: PAM and CLARA, as cluster centres were required to be real data points, as they represented colours. This restriction was formulated as I chose to work with such methodology. Methods which compute centroids (such as K-Means) could also be used, with a justified methodology, for example, to create one representative 'average' colour of a given palette within market or visual clusters. Clustering algorithms allow for a range of different approaches and can lead to many productive analyses.
+
+
+# Bibliography
